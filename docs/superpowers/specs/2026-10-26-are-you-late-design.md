@@ -184,6 +184,56 @@ The Worker is written in TypeScript (supported natively by wrangler). Node.js LT
 - **Handler tests**: wrong method → 405, wrong path → 404, invalid `dir` → 400, CORS header only for the allowed origin.
 - **Manual**: `wrangler dev` (reads `.dev.vars`) plus the page in a local browser, using `?dir=` to force either leg. Then deploy and check on a real iPhone on a real morning, and tune thresholds.
 
+## 12. Revision 1 (2026-10-26): push from a home server
+
+**Why**: ViaggiaTreno (Akamai) answers 403 to requests from cloud hosts (verified from Cloudflare Workers and Deno Deploy). It works from a home connection. No public real-time open data exists for the line. Data must therefore be fetched from home. We do not try to get around the block.
+
+This section supersedes §3 (production config location), §4 (architecture), the upstream parts of §5 and §7, and §9 where they conflict.
+
+### Architecture
+
+```
+k3s on the home server   CronJob every minute, 05:00–08:59 and 12:00–14:59 Europe/Rome
+   │  poller: parse ROUTE_CONFIG → selectLeg → fetchTrain (ViaggiaTreno) → computeStatus
+   │  POST /push  { leg, status }   Authorization: Bearer PUSH_TOKEN
+   ▼
+Cloudflare Worker  validates and stores in KV: status:outbound, status:return
+   │  GET /status       → the most recently updated leg
+   │  GET /status?dir=x → that leg
+   ▼
+iPhone page (unchanged except §12 client)
+```
+
+- The poller reuses `config`, `time`, `viaggiatreno` and `status` unchanged. One upstream request per minute, in the windows only. If upstream fails, it pushes `errorStatus` for the leg.
+- The Worker no longer calls ViaggiaTreno and no longer holds `ROUTE_CONFIG`. It does not know the route. Without `dir`, it serves whichever stored leg has the newer `updated_at`, which is the poller's current leg. A missing key gives `errorStatus`.
+- Freshness: KV is eventually consistent (up to about 60 s across locations). Together with the 1-minute poll period, the page may lag reality by up to about 2 minutes. This is acceptable: the checkpoint alarm gives about 5 minutes of warning.
+
+### `POST /push` security
+
+- Only `POST /push`. The `Authorization: Bearer <token>` header is compared in constant time with `PUSH_TOKEN` (32 random bytes, hex). Missing or wrong token → 401 **before reading the body**.
+- Body ≤ 8 KB (declared `Content-Length` and bytes actually read). Larger → 413.
+- Body `{ leg, status }` is validated field by field: `leg` ∈ `outbound|return`, `status` against the `StatusResponse` schema (closed sets for colour/kind/state, strings ≤ 80 chars, ≤ 5 stops, `updated_at` ISO, `delay_min` integer within −60…600). The Worker stores a freshly built object. Invalid → 400. Success → 204.
+- No CORS on `/push`: it is server-to-server only.
+
+### Secrets and where they live
+
+| Secret | Where | Never in |
+|---|---|---|
+| `PUSH_TOKEN` | Cloudflare Worker secret; Kubernetes Secret `are-you-late` on the server; local `worker/.dev.vars` | repo, manifests, logs |
+| `ROUTE_CONFIG` | Kubernetes Secret `are-you-late`; local `worker/.dev.vars` | repo, Cloudflare (deleted from the Worker) |
+
+Kubernetes Secrets are created by piping values over SSH to `kubectl create secret … --from-env-file=/dev/stdin`. No secret file is written on the server's disk.
+
+### k3s deployment
+
+- Namespace `are-you-late`. ConfigMap `poller-code` holds the bundled `poller.mjs`, built with esbuild from `worker/src/poller-main.ts` and not committed. CronJob `poller` uses the official `node:24-alpine` image, so no custom image or registry is needed.
+- CronJob: `schedule: "* 5-8,12-14 * * *"`, `timeZone: Europe/Rome`, `concurrencyPolicy: Forbid`, `startingDeadlineSeconds: 30`, `activeDeadlineSeconds: 50`, `ttlSecondsAfterFinished: 600`, history 1 success / 3 failures.
+- Pod hardening: `runAsNonRoot` (uid 1000), `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`, all capabilities dropped, small CPU/memory limits, no service account token.
+
+### Client change
+
+The age shown ("aggiornato N min fa" / stale) is computed from `updated_at`, which records when the server read the train, not when the phone received the response. If the poller stops, the page dims after 3 minutes.
+
 ## 11. Open points
 
 - Exact cancellation flags in ViaggiaTreno (see §6).

@@ -33,6 +33,7 @@ Base: `https://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno`
 - Cancellation (verified 2026-10-26): partial = `tipoTreno "PP"` with `fermate[].actualFermataType === 3` on the skipped stops. Full = `tipoTreno "ST"` / `provvedimento 1` (not yet observed). `actualFermataType` 0 = not yet reached, 1 = regular.
 - `andamentoTreno` returns HTTP 204 for a day that is not loaded yet (e.g. tomorrow), the same as for a train that does not run.
 - On the target line only a few stations report actual times (see the spec §2 and `CLAUDE.local.md`).
+- **Blocked from cloud hosts (verified 2026-10-26):** ViaggiaTreno (Akamai) answers HTTP 403 "Access Denied" to requests from Cloudflare Workers and from Deno Deploy, with or without a browser User-Agent. Requests from a home connection work. Do not try to get around the block: data must be fetched from a home connection.
 - No CORS headers, so the browser cannot call it directly. It may change without notice: when something breaks, check these endpoints first.
 
 ## Project rules
