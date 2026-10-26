@@ -30,6 +30,8 @@ Base: `https://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno`
 | `cercaNumeroTrenoTrenoAutocomplete/{train}` | origin code for a train number |
 | `autocompletaStazione/{text}` | station code lookup |
 
+- Cancellation (verified 2026-10-26): partial = `tipoTreno "PP"` with `fermate[].actualFermataType === 3` on the skipped stops. Full = `tipoTreno "ST"` / `provvedimento 1` (not yet observed). `actualFermataType` 0 = not yet reached, 1 = regular.
+- `andamentoTreno` returns HTTP 204 for a day that is not loaded yet (e.g. tomorrow), the same as for a train that does not run.
 - On the target line only a few stations report actual times (see the spec §2 and `CLAUDE.local.md`).
 - No CORS headers, so the browser cannot call it directly. It may change without notice: when something breaks, check these endpoints first.
 
