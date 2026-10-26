@@ -79,7 +79,9 @@ function outbound(t: Train, nowMs: number, cfg: RouteConfig, base: StatusRespons
     },
   ];
   const movingAfter = passed ? null : atCp ? c.checkpoint.label : departed ? c.origin.label : null;
-  return { ...base, delay_min: delay, light: lt, stops, moving_after: movingAfter };
+  // Show the delay that matters to the user (at their stop), not the train's latest one.
+  const userDelay = departed ? userEst - userSched : delay;
+  return { ...base, delay_min: userDelay, light: lt, stops, moving_after: movingAfter };
 }
 
 function returnLeg(t: Train, nowMs: number, cfg: RouteConfig, base: StatusResponse): StatusResponse {

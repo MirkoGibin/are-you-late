@@ -57,6 +57,12 @@ describe("outbound", () => {
     expect(r.moving_after).toBe("Checkpoint");
   });
 
+  it("delay_min is the delay at the user's stop, not the train's current delay", () => {
+    const r = run(train({ origin: at("07:54"), checkpoint: at("08:08"), delay: 30 }), "08:09");
+    expect(r.stops?.[2].time).toBe("08:13");
+    expect(r.delay_min).toBe(23);
+  });
+
   it("checkpoint detected, origin not", () => {
     const r = run(train({ checkpoint: at("08:08"), delay: 23 }), "08:09");
     expect(r.light.color).toBe("red");
