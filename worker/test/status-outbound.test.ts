@@ -117,6 +117,14 @@ describe("outbound", () => {
     expect(run(t, "07:36").light.title).toBe("Treno soppresso");
   });
 
+  it("origin-only cancellation is not a cancellation (train starts later)", () => {
+    const t = train({ checkpoint: at("08:08"), delay: 23 });
+    t.stops[0].cancelled = true;
+    const r = run(t, "08:09");
+    expect(r.light.color).toBe("red");
+    expect(r.light.title).toBe("Lasciato Checkpoint");
+  });
+
   it("an unrelated stop cancelled does not matter", () => {
     const t = train();
     t.stops[2].cancelled = true;

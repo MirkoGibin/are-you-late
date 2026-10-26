@@ -72,6 +72,12 @@ describe("return", () => {
     expect(run(t, "12:05").light).toEqual({ color: "red", title: "Treno soppresso", subtitle: "" });
   });
 
+  it("origin-only cancellation is not a cancellation", () => {
+    const t = train();
+    t.stops[0].cancelled = true;
+    expect(run(t, "12:05").light.title).not.toBe("Treno soppresso");
+  });
+
   it("not running", () => {
     expect(run("not_running", "12:05").light.title).toBe("Oggi questo treno non circola");
   });

@@ -47,7 +47,8 @@ function outbound(t: Train, nowMs: number, cfg: RouteConfig, base: StatusRespons
   const o = find(t, c.origin.code);
   const cp = find(t, c.checkpoint.code);
   if (!o || !cp) return errorStatus(nowMs);
-  if (t.cancelled || o.cancelled || cp.cancelled) return { ...base, light: light("red", T.cancelled) };
+  // A cancelled origin only means the train starts further down the line: not a cancellation for the user.
+  if (t.cancelled || cp.cancelled) return { ...base, light: light("red", T.cancelled) };
 
   const delay = t.delayMin;
   const atCp = cp.actualMs !== null;
@@ -89,7 +90,7 @@ function returnLeg(t: Train, nowMs: number, cfg: RouteConfig, base: StatusRespon
   const o = find(t, c.origin.code);
   const u = find(t, c.userStop.code);
   if (!o || !u) return errorStatus(nowMs);
-  if (t.cancelled || o.cancelled || u.cancelled) return { ...base, light: light("red", T.cancelled) };
+  if (t.cancelled || u.cancelled) return { ...base, light: light("red", T.cancelled) };
 
   const departed = o.actualMs !== null;
   // The spec estimates from the delay measured at the origin; the train's current

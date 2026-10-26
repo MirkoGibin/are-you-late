@@ -6,6 +6,7 @@ const API = location.hostname === "localhost" || location.hostname === "127.0.0.
   : "https://are-you-late.SUBDOMAIN.workers.dev/status";
 const REFRESH_MS = 60_000;
 const STALE_MS = 3 * 60_000;
+const FETCH_TIMEOUT_MS = 8_000;
 const COLORS = ["grey", "yellow", "red", "green"];
 const CAPTION = { detected: "rilevato", estimate: "stima", scheduled: "previsto" };
 
@@ -81,9 +82,12 @@ async function refresh() {
   const dir = new URLSearchParams(location.search).get("dir");
   const url = dir === "outbound" || dir === "return" ? `${API}?dir=${dir}` : API;
   try {
-    const res = await fetch(url, { referrerPolicy: "no-referrer" });
+    const res = await fetch(url, { referrerPolicy: "no-referrer", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
     if (!res.ok) throw new Error(String(res.status));
-    last = await res.json();
+    const data = await res.json();
+    // A Worker-side failure (ok:false) must not wipe the last good data: keep it, dimmed.
+    if (data.ok === false && last) throw new Error("upstream unavailable");
+    last = data;
     lastOkAt = Date.now();
     render(last);
     failing = false;
@@ -97,6 +101,16 @@ async function refresh() {
 refresh();
 setInterval(refresh, REFRESH_MS);
 setInterval(renderAge, 15_000);
+// On wake-up, dim old data immediately (renderAge) before the network answers.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") refresh();
+  if (document.visibilityState === "visible") {
+    renderAge();
+    refresh();
+  }
+});
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) {
+    renderAge();
+    refresh();
+  }
 });
