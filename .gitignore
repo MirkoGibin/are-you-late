@@ -6,3 +6,6 @@ node_modules/
 CLAUDE.local.md
 .dev.vars
 *.local.json
+
+# Plan execution scratch
+.superpowers/

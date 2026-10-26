@@ -1,0 +1,14 @@
+name = "are-you-late"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# Not secret: the page origin allowed by CORS. Overridden locally in .dev.vars.
+[vars]
+ALLOWED_ORIGIN = "https://mirkogibin.github.io"
+
+# ROUTE_CONFIG is a secret: `wrangler secret put ROUTE_CONFIG` (never in this file).
+
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
