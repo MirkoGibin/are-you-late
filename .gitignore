@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+.DS_Store
+
+# Private route details and real config (see CLAUDE.md "Privacy")
+CLAUDE.local.md
+.dev.vars
+*.local.json
