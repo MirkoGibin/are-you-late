@@ -11,6 +11,10 @@ const T = {
   leftCheckpoint: (c: string) => `Lasciato ${c}`,
   run: "corri",
   passedAt: (hhmm: string) => `Treno passato alle ${hhmm}`,
+  arrivingAround: (hhmm: string) => `In arrivo verso le ${hhmm}`,
+  lateAround: (hhmm: string) => `In ritardo, verso le ${hhmm}`,
+  estimateFrom: (o: string) => `stima dal ritardo a ${o}`,
+  probablyPassed: "Probabilmente passato",
   notRunning: "Oggi questo treno non circola",
   cancelled: "Treno soppresso",
   unavailable: "Dati non disponibili al momento",
@@ -78,6 +82,42 @@ function outbound(t: Train, nowMs: number, cfg: RouteConfig, base: StatusRespons
   return { ...base, delay_min: delay, light: lt, stops, moving_after: movingAfter };
 }
 
+function returnLeg(t: Train, nowMs: number, cfg: RouteConfig, base: StatusResponse): StatusResponse {
+  const c = cfg.return;
+  const o = find(t, c.origin.code);
+  const u = find(t, c.userStop.code);
+  if (!o || !u) return errorStatus(nowMs);
+  if (t.cancelled || o.cancelled || u.cancelled) return { ...base, light: light("red", T.cancelled) };
+
+  const delay = t.delayMin;
+  const departed = o.actualMs !== null;
+  // Only the origin is detected on this leg: the user's stop is always an estimate.
+  const userEst = parseHHMM(c.userStop.scheduled) + (departed ? delay : 0);
+  const passed = departed && romeClock(nowMs).minutes > userEst + cfg.thresholds.passedGraceMin;
+  const hhmm = minutesToHHMM(userEst);
+
+  const lt = passed
+    ? light("grey", T.probablyPassed)
+    : !departed
+      ? light("grey", T.notDepartedFrom(c.origin.label), T.scheduled(c.userStop.scheduled))
+      : delay > cfg.thresholds.returnYellowDelayMin
+        ? light("yellow", T.lateAround(hhmm), T.estimateFrom(c.origin.label))
+        : light("green", T.arrivingAround(hhmm), T.estimateFrom(c.origin.label));
+
+  const stops: StopView[] = [
+    { ...view(c.origin.label, o, departed, delay), state: departed ? "passed" : "next" },
+    {
+      name: c.userStop.label,
+      time: hhmm,
+      kind: departed ? "estimate" : "scheduled",
+      state: "target",
+      scheduled: c.userStop.scheduled,
+    },
+  ];
+  const movingAfter = departed && !passed ? c.origin.label : null;
+  return { ...base, delay_min: delay, light: lt, stops, moving_after: movingAfter };
+}
+
 /** Pure: validated train data + clock + config → the JSON the page renders. */
 export function computeStatus(leg: Leg, train: Train | "not_running", nowMs: number, cfg: RouteConfig): StatusResponse {
   const base: StatusResponse = {
@@ -94,6 +134,5 @@ export function computeStatus(leg: Leg, train: Train | "not_running", nowMs: num
     }
     return { ...base, light: light("grey", T.notRunning) };
   }
-  if (leg === "outbound") return outbound(train, nowMs, cfg, base);
-  return errorStatus(nowMs);
+  return leg === "outbound" ? outbound(train, nowMs, cfg, base) : returnLeg(train, nowMs, cfg, base);
 }
