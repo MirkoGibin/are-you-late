@@ -1,0 +1,32 @@
+{
+    "numeroTreno":  0,
+    "categoria":  "REG",
+    "origine":  "STAZIONE A",
+    "destinazione":  "STAZIONE C",
+    "ritardo":  11,
+    "tipoTreno":  "PG",
+    "provvedimento":  0,
+    "fermate":  [
+                    {
+                        "stazione":  "STAZIONE A",
+                        "id":  "S00000",
+                        "programmata":  1894692000000,
+                        "effettiva":  1894692660000,
+                        "actualFermataType":  1
+                    },
+                    {
+                        "stazione":  "STAZIONE B",
+                        "id":  "S00001",
+                        "programmata":  1894692720000,
+                        "effettiva":  1894693380000,
+                        "actualFermataType":  1
+                    },
+                    {
+                        "stazione":  "STAZIONE C",
+                        "id":  "S10001",
+                        "programmata":  1894696800000,
+                        "effettiva":  null,
+                        "actualFermataType":  0
+                    }
+                ]
+}
