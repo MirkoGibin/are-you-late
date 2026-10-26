@@ -58,7 +58,7 @@ iPhone (static page, GitHub Pages)
    ▼
 Cloudflare Worker ──► ViaggiaTreno andamentoTreno (URLs built from ROUTE_CONFIG only)
    │  all logic: pick leg by time, compute state, estimates, colour
-   │  edge cache 30 s
+   │  in-memory cache 30 s
    ▼
 ready-to-render JSON
 ```
@@ -138,7 +138,7 @@ There is no way to authenticate an anonymous public page, and any key shipped to
 - **Minimal surface**: only `GET /status` and `OPTIONS`. Other methods get 405, other paths 404. The request body is never read. Headers and query parameters are ignored except `dir`, which is checked against a closed list (anything else → 400).
 - **No user input upstream**: ViaggiaTreno URLs are built only from the validated `ROUTE_CONFIG` (no injection, no SSRF).
 - **Upstream validation**: the ViaggiaTreno JSON is validated (types, string lengths, plausible timestamps) and a new response object is built. Upstream data is never passed through, so real station names from ViaggiaTreno never reach the client, only the config labels.
-- **DDoS / abuse**: Cloudflare's built-in DDoS protection. A 30 s edge cache means at most about 2 upstream calls per minute per location, whatever the traffic. A Workers rate-limit binding allows about 30 requests/min per IP, and above that the Worker returns 429. On the free plan (100k requests/day) exhaustion means downtime, not a bill.
+- **DDoS / abuse**: Cloudflare's built-in DDoS protection. A 30 s cache (kept in Worker memory, because the Cache API is a no-op on `*.workers.dev`) means at most about 2 upstream calls per minute per Worker instance, whatever the traffic. A Workers rate-limit binding allows about 30 requests/min per IP, and above that the Worker returns 429. On the free plan (100k requests/day) exhaustion means downtime, not a bill.
 - **CORS**: `Access-Control-Allow-Origin` set to the Pages origin only. This is not access control against scripts.
 - **Client**: renders only with `textContent` (never `innerHTML`). Colours map to a closed set of CSS classes, with unknown values falling back to grey. No third-party scripts. A strict Content-Security-Policy allows only the page's own script and `connect-src` to the Worker origin. `<meta name="robots" content="noindex">` keeps it out of search engines.
 - **Secrets / private data**: the only private item is `ROUTE_CONFIG` (Cloudflare secret, plus gitignored `.dev.vars` locally). The Worker is deployed manually from the developer's PC via `wrangler login` (OAuth, token kept in the local wrangler profile, never in the repo). A later option is a GitHub Actions deploy with a minimal-scope Cloudflare API token stored in GitHub Secrets.
