@@ -89,8 +89,10 @@ function returnLeg(t: Train, nowMs: number, cfg: RouteConfig, base: StatusRespon
   if (!o || !u) return errorStatus(nowMs);
   if (t.cancelled || o.cancelled || u.cancelled) return { ...base, light: light("red", T.cancelled) };
 
-  const delay = t.delayMin;
   const departed = o.actualMs !== null;
+  // The spec estimates from the delay measured at the origin; the train's current
+  // delay changes later (e.g. on arrival at its terminus).
+  const delay = departed ? Math.round(((o.actualMs as number) - o.scheduledMs) / 60000) : t.delayMin;
   // Only the origin is detected on this leg: the user's stop is always an estimate.
   const userEst = parseHHMM(c.userStop.scheduled) + (departed ? delay : 0);
   const passed = departed && romeClock(nowMs).minutes > userEst + cfg.thresholds.passedGraceMin;

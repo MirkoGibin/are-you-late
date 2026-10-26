@@ -45,6 +45,12 @@ describe("return", () => {
     expect(r.delay_min).toBe(2);
   });
 
+  it("uses the delay measured at the origin, not the train's current delay", () => {
+    const r = run(train({ left: at("12:13"), delay: 0 }), "12:14");
+    expect(r.light.title).toBe("In arrivo verso le 13:02");
+    expect(r.delay_min).toBe(2);
+  });
+
   it("left, delay over threshold", () => {
     const r = run(train({ left: at("12:17"), delay: 6 }), "12:18");
     expect(r.light).toEqual({ color: "yellow", title: "In ritardo, verso le 13:06", subtitle: est });
