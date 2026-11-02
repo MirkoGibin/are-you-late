@@ -1,10 +1,12 @@
 node_modules/
 .wrangler/
+dist/
 .DS_Store
 
 # Private route details and real config (see CLAUDE.md "Privacy")
 CLAUDE.local.md
 .dev.vars
+.env*
 *.local.json
 
 # Plan execution scratch
