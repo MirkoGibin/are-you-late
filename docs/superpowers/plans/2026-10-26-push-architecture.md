@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fetch train data from the home k3s server and push the computed status to the Cloudflare Worker, which stores it in KV and serves it to the page.
+**Goal:** Fetch train data from the home k3s cluster and push the computed status to the Cloudflare Worker, which stores it in KV and serves it to the page.
 
 **Architecture:** The pure modules already built (`config`, `time`, `viaggiatreno`, `status`) move behind a new poller entry point (`poller.ts` + `poller-main.ts`). The poller is bundled to one `.mjs` and runs as a k3s CronJob on `node:24-alpine`. The Worker drops its upstream calls and gains an authenticated `POST /push` plus KV storage.
 
@@ -85,18 +85,54 @@
 - [ ] **Step 2: Verify in the browser pane** with local `wrangler dev` and a manual push of a status whose `updated_at` is 5 minutes old → page dimmed, "non aggiornato da 5 min". Then push a fresh one → normal.
 - [ ] **Step 3: Commit** `feat: page age follows the server read time`.
 
-### Task 5: k3s manifests and deploy
+> Tasks 5 and 6 were revised on 2026-11-02 by spec §13: this system is now a tenant of a shared cluster. Its namespace is provided by the cluster's own repository, and deploys run through `kubectl` from the workstation. The secrets rule still holds: values pass only through stdin and a file outside the repository.
 
-**Files:** create `deploy/k3s/namespace.yaml`, `deploy/k3s/cronjob.yaml`, `deploy/README.md` (generic commands, no values).
+### Task 5: Deploy to the cluster
 
-- [ ] **Step 1: Manifests** per spec §12 (CronJob fields and pod hardening exactly as listed). The pod mounts ConfigMap `poller-code` at `/app` (read-only) and uses `envFrom: secretRef: are-you-late`. `automountServiceAccountToken: false`.
-- [ ] **Step 2: Cloudflare.** `wrangler kv namespace create STATUS` → put the id in `wrangler.toml`. Generate `PUSH_TOKEN` (32 random bytes hex) locally into `worker/.dev.vars`, then `wrangler secret put PUSH_TOKEN` (stdin) and `wrangler secret delete ROUTE_CONFIG`. `wrangler deploy`.
-- [ ] **Step 3: Server (SSH).** `kubectl apply -f namespace.yaml`. Create Secret `are-you-late` from stdin (`ROUTE_CONFIG`, `PUSH_TOKEN`, `PUSH_URL=https://are-you-late.are-you-late.workers.dev/push`). Create ConfigMap `poller-code` from the built `dist/poller.mjs` (piped). `kubectl apply -f cronjob.yaml`.
-- [ ] **Step 4: Verify.** `kubectl create job --from=cronjob/poller manual-1 -n are-you-late`, then its logs show `push ok`. `curl <worker>/status` → `ok:true` with real labels. Leak guard + `git log -p` grep before any commit.
-- [ ] **Step 5: Commit** `feat: k3s deployment for the poller`.
+**Files:** create `deploy/site.yml`, `deploy/k3s/cronjob.yaml`, `deploy/poller.env.example`, `deploy/README.md`. Modify `worker/wrangler.toml`, `CLAUDE.md`, `README.md`.
 
-### Task 6: Publish page (user confirmation required) and docs
+**Precondition:** namespace `are-you-late` exists on the cluster. If not, stop: this repository never creates it.
 
-- [ ] **Step 1:** Fill the Worker URL into `web/app.js` and the CSP (`connect-src` = Worker origin only, drop 127.0.0.1). Add `.github/workflows/pages.yml` (as in the first plan, Task 9 Step 3).
-- [ ] **Step 2:** Ask the user. Then `gh repo create MirkoGibin/are-you-late --public --source . --push` (branch merged to `main` first) and enable Pages via `gh api`.
-- [ ] **Step 3:** Live check on the Pages URL at iPhone size. Update `README.md`/`CLAUDE.md` (architecture, how to redeploy the poller, how to rotate `PUSH_TOKEN`).
+**Interfaces:** `deploy/site.yml` variables: `secrets_file` (default `~/.config/are-you-late/poller.env`), `kubeconfig_file` (default `~/.kube/config`). The file holds `ROUTE_CONFIG`, `PUSH_TOKEN`, `PUSH_URL`, one `KEY=value` per line, unquoted.
+
+**Review Focus for this task:**
+- **Secrets file readable by others:** the playbook stops unless its mode is `0600`. Pinned in Step 2.
+- **A pipe hiding a failed `kubectl create`:** `set -o pipefail` makes the task fail. Pinned in Step 3.
+- **Secret values in Ansible output:** pinned in Step 8.
+- **A quoted `ROUTE_CONFIG` copied from `.dev.vars`:** the poller logs `config error`. Pinned in Step 6, which strips the quotes, and Step 9.
+
+- [ ] **Step 1: Write the CronJob.** `deploy/k3s/cronjob.yaml`: the fields and hardening in spec §12, exactly. Namespace `are-you-late`, name `poller`, image `node:24-alpine`, command `node /app/poller.mjs`, ConfigMap `poller-code` mounted read-only at `/app`, `envFrom` Secret `are-you-late`, requests `50m`/`64Mi`, limits `200m`/`128Mi`, `seccompProfile: RuntimeDefault`.
+  Run: `KUBECONFIG=~/.kube/config kubectl apply --dry-run=server -f deploy/k3s/cronjob.yaml`
+  Expected: `cronjob.batch/poller created (server dry run)`.
+- [ ] **Step 2: Write the stop conditions first.** `deploy/site.yml`, on `localhost` with `connection: local`, `gather_facts: false`, and `KUBECONFIG` from `kubeconfig_file` in `environment`. Checks, in order: namespace exists; `worker/dist/poller.mjs` exists; `secrets_file` exists with mode `0600`. Each failure message names what to do.
+  Run with `-e secrets_file=/nonexistent`. Expected: stops on the secrets check, with nothing applied. Run with the bundle renamed. Expected: stops on the bundle check. Run with a temporary `0644` file. Expected: stops on the mode check.
+- [ ] **Step 3: Add the apply tasks.** ConfigMap `poller-code` from the bundle, Secret `are-you-late` from `secrets_file`, then the CronJob, using the command form in spec §13. `executable: /bin/bash`, `set -o pipefail`, `no_log: true` on the Secret task.
+  Run: `ansible-playbook -i localhost, deploy/site.yml --syntax-check`. Expected: `playbook: deploy/site.yml`.
+- [ ] **Step 4: Documents.** `deploy/poller.env.example` with fictional values only. `deploy/README.md` with generic commands: build, run, rotate `PUSH_TOKEN`. Update `CLAUDE.md` and `README.md`: push architecture, tenant of a shared cluster, deploy, `POST /push` in the security rules, and the no-workstation-details rule.
+  Run: `npm --prefix worker test && npm --prefix worker run typecheck`. Expected: PASS, including the leak guard.
+- [ ] **Step 5: Commit** `feat: deploy the poller to the shared cluster`.
+- [ ] **Step 6: Prepare the secrets, printing no values.** Create `~/.config/are-you-late/poller.env` with mode `0600`: `ROUTE_CONFIG` from `worker/.dev.vars` with its surrounding quotes removed, `PUSH_TOKEN` from `openssl rand -hex 32`. `PUSH_URL` is added in Step 7.
+- [ ] **Step 7: USER GATE: Cloudflare.** After confirmation, from `worker/`:
+  - `npx wrangler kv namespace create STATUS`, and put the id in `wrangler.toml`;
+  - pipe the token: `grep '^PUSH_TOKEN=' ~/.config/are-you-late/poller.env | cut -d= -f2- | npx wrangler secret put PUSH_TOKEN`;
+  - `npx wrangler secret delete ROUTE_CONFIG`;
+  - `npx wrangler deploy`, and read the real URL from its output;
+  - append `PUSH_URL=<url>/push` to the secrets file.
+  Commit `chore: bind the status KV namespace`.
+- [ ] **Step 8: USER GATE: cluster.** After confirmation: `npm --prefix worker run build:poller`, then `ansible-playbook -i localhost, deploy/site.yml`.
+  Expected: `failed=0` and no secret values in the output.
+  Run: `kubectl get secret are-you-late -n are-you-late -o jsonpath='{.metadata.annotations}'`. Expected: no `last-applied-configuration`.
+- [ ] **Step 9: Verify end to end.** `kubectl create job --from=cronjob/poller manual-1 -n are-you-late`.
+  Expected: its log shows `push ok`, and `curl <worker>/status` returns `ok:true` with real labels. If ViaggiaTreno refuses the pod, the log and status show it: stop and report. Do not try to get around a block. Delete `manual-1` afterwards.
+
+### Task 6: Publish the page
+
+**Files:** modify `web/app.js`, `web/index.html`. Create `.github/workflows/pages.yml`.
+
+- [ ] **Step 1:** Put the Worker URL in `web/app.js` and in the CSP (`connect-src` is the Worker origin only, without `127.0.0.1`). Add the workflow as in the first plan, Task 9 Step 3. Commit `feat: point the page at the Worker`.
+- [ ] **Step 2: Whole-branch review** as the executing skill requires, including this plan's Review Focus.
+- [ ] **Step 3: Scan all history.**
+  Real values: every string value of the `code`, `train` and `label` fields in `ROUTE_CONFIG` that is not in the example config, searched with `git grep` in every commit of `git rev-list --all`, and in `git log --all --format=%B`. Also the real station names, train numbers and times in `CLAUDE.local.md`. Workstation details: the terms in `~/.config/homelab/host-patterns.txt`, a file outside every repository, ignoring case. Never copy those terms into a tracked file. Print only file and commit for each hit, never the value.
+  Expected: no hits.
+- [ ] **Step 4: USER GATE: publish.** After confirmation: merge the branch into `main`, `gh repo create MirkoGibin/are-you-late --public --source . --push`, enable Pages with `gh api`, and add the repository to the shared board.
+- [ ] **Step 5: Live check** on the Pages URL at iPhone size, including the dimming that Task 4 verified only on a stub DOM.
