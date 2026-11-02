@@ -88,7 +88,7 @@ async function refresh() {
     // A Worker-side failure (ok:false) must not wipe the last good data: keep it, dimmed.
     if (data.ok === false && last) throw new Error("upstream unavailable");
     last = data;
-    lastOkAt = Date.now();
+    lastOkAt = Date.parse(data.updated_at) || Date.now();
     render(last);
     failing = false;
   } catch {
