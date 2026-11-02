@@ -6,7 +6,12 @@ compatibility_date = "2026-10-01"
 [vars]
 ALLOWED_ORIGIN = "https://mirkogibin.github.io"
 
-# ROUTE_CONFIG is a secret: `wrangler secret put ROUTE_CONFIG` (never in this file).
+# PUSH_TOKEN is a secret: `wrangler secret put PUSH_TOKEN` (never in this file).
+
+# Latest pushed status per leg. The id is filled in when the namespace is created.
+[[kv_namespaces]]
+binding = "STATUS"
+id = "TO_BE_CREATED"
 
 [[ratelimits]]
 name = "RATE_LIMITER"

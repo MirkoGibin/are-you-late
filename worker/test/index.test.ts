@@ -1,107 +1,163 @@
 import { describe, expect, it, vi } from "vitest";
-import example from "../route-config.example.json";
-import { handle, type Deps, type Env } from "../src/index";
+import { handle, safeEqual, type Env, type KVLike } from "../src/index";
+import { errorStatus } from "../src/status";
 import type { StatusResponse } from "../src/types";
-import { at, makeRaw } from "./helpers";
-
-const json = (r: Response) => r.json() as Promise<StatusResponse>;
+import { at } from "./helpers";
 
 const ORIGIN = "https://pages.example";
-const outboundBody = makeRaw({
-  ritardo: 23,
-  fermate: [
-    { id: "S00000", programmata: at("07:31"), effettiva: at("07:54"), stazione: "SECRET TOWN" },
-    { id: "S00001", programmata: at("07:45"), stazione: "SECRET VILLAGE" },
-  ],
+const TOKEN = "a".repeat(64);
+const AUTH = { Authorization: `Bearer ${TOKEN}` };
+
+const status = (direction: "outbound" | "return", hhmm: string): StatusResponse => ({
+  ok: true,
+  direction,
+  delay_min: 3,
+  light: { color: "yellow", title: "Titolo", subtitle: "" },
+  stops: [{ name: "Partenza", time: "07:50", kind: "detected", state: "passed" }],
+  moving_after: "Partenza",
+  updated_at: new Date(at(hhmm)).toISOString(),
 });
 
-function setup(o: { body?: string; fetchFn?: typeof fetch; limited?: boolean; config?: string | null; now?: number } = {}) {
-  const fetchFn = vi.fn(o.fetchFn ?? (async () => new Response(o.body ?? outboundBody)));
-  const limit = vi.fn(async () => ({ success: !o.limited }));
-  let now = o.now ?? at("07:55");
-  const env: Env = {
-    ALLOWED_ORIGIN: ORIGIN,
-    ROUTE_CONFIG: o.config === null ? undefined : (o.config ?? JSON.stringify(example)),
-    RATE_LIMITER: { limit },
+function memoryKV(initial: Record<string, string> = {}, failing: { get?: boolean; put?: boolean } = {}) {
+  const data = new Map(Object.entries(initial));
+  const kv: KVLike = {
+    async get(k) {
+      if (failing.get) throw new Error("kv get failed");
+      return data.get(k) ?? null;
+    },
+    async put(k, v) {
+      if (failing.put) throw new Error("kv put failed");
+      data.set(k, v);
+    },
   };
-  const deps: Deps = { fetchFn: fetchFn as unknown as typeof fetch, now: () => now, cache: new Map(), timeoutMs: 50 };
-  const call = (path: string, init?: RequestInit) =>
-    handle(new Request(`https://worker.example${path}`, { headers: { "cf-connecting-ip": "203.0.113.7" }, ...init }), env, deps);
-  return { call, fetchFn, limit, advance: (ms: number) => (now += ms) };
+  return { kv, data };
 }
 
+function setup(o: { stored?: Record<string, string>; failing?: { get?: boolean; put?: boolean }; limited?: boolean; token?: string | null } = {}) {
+  const { kv, data } = memoryKV(o.stored, o.failing);
+  const limit = vi.fn(async () => ({ success: !o.limited }));
+  const env: Env = {
+    ALLOWED_ORIGIN: ORIGIN,
+    PUSH_TOKEN: o.token === null ? undefined : (o.token ?? TOKEN),
+    STATUS: kv,
+    RATE_LIMITER: { limit },
+  };
+  const deps = { now: () => at("07:55") };
+  const call = (path: string, init?: RequestInit) => {
+    const headers = { "cf-connecting-ip": "203.0.113.7", ...init?.headers };
+    return handle(new Request(`https://worker.example${path}`, { ...init, headers }), env, deps);
+  };
+  const push = (body: BodyInit, headers: Record<string, string> = AUTH) => call("/push", { method: "POST", headers, body });
+  return { call, push, data, limit };
+}
+
+const throwingBody = () =>
+  new ReadableStream({
+    pull() {
+      throw new Error("body was read");
+    },
+  });
+
+const streamOf = (bytes: number) =>
+  new ReadableStream({
+    start(c) {
+      c.enqueue(new Uint8Array(bytes).fill(32));
+      c.close();
+    },
+  });
+
+const validPush = () => JSON.stringify({ leg: "outbound", status: status("outbound", "07:54") });
+
 describe("routing", () => {
-  it("POST /status â†’ 405", async () => {
+  it("POST /status → 405", async () => {
     expect((await setup().call("/status", { method: "POST", body: "x" })).status).toBe(405);
   });
 
-  it.each(["/", "/status/x", "/statusx"])("GET %s â†’ 404", async (p) => {
+  it.each(["/", "/status/x", "/statusx", "/push/x"])("GET %s → 404", async (p) => {
     expect((await setup().call(p)).status).toBe(404);
   });
 
-  it.each(["sideways", "", "OUTBOUND"])("GET /status?dir=%s â†’ 400", async (d) => {
+  it.each(["sideways", "", "OUTBOUND"])("GET /status?dir=%s → 400", async (d) => {
     expect((await setup().call(`/status?dir=${d}`)).status).toBe(400);
   });
 
-  it("repeated dir â†’ 400", async () => {
+  it("repeated dir → 400", async () => {
     expect((await setup().call("/status?dir=outbound&dir=return")).status).toBe(400);
   });
 
-  it("the request body is never read", async () => {
-    const body = new ReadableStream({
-      pull() {
-        throw new Error("body was read");
-      },
-    });
-    const r = await setup().call("/status", { method: "POST", body, duplex: "half" } as RequestInit);
+  it("the body of a rejected POST /status is never read", async () => {
+    const r = await setup().call("/status", { method: "POST", body: throwingBody(), duplex: "half" } as RequestInit);
     expect(r.status).toBe(405);
+  });
+
+  it.each(["GET", "OPTIONS", "PUT", "DELETE"])("%s /push → 405 without CORS", async (method) => {
+    const r = await setup().call("/push", { method });
+    expect(r.status).toBe(405);
+    expect(r.headers.get("access-control-allow-origin")).toBeNull();
   });
 });
 
 describe("GET /status", () => {
-  it("returns the status with CORS and security headers", async () => {
-    const r = await setup().call("/status?dir=outbound");
+  it("no stored keys → 200 ok:false", async () => {
+    const r = await setup().call("/status");
     expect(r.status).toBe(200);
+    expect(await r.json()).toEqual(errorStatus(at("07:55")));
+  });
+
+  it("returns CORS and security headers", async () => {
+    const r = await setup().call("/status");
     expect(r.headers.get("access-control-allow-origin")).toBe(ORIGIN);
     expect(r.headers.get("vary")).toBe("Origin");
     expect(r.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(r.headers.get("cache-control")).toBe("public, max-age=30");
     expect(r.headers.get("x-content-type-options")).toBe("nosniff");
-    const j = await json(r);
-    expect(j.ok).toBe(true);
-    expect(j.direction).toBe("outbound");
-    expect(j.light.color).toBe("yellow");
   });
 
-  it("calls upstream with a URL built from the config only", async () => {
-    const s = setup();
-    await s.call("/status?dir=outbound&evil=../../x");
-    expect(s.fetchFn.mock.calls[0][0]).toBe(
-      `https://www.viaggiatreno.it/infomobilita/resteasy/viaggiatreno/andamentoTreno/S00000/00000/${Date.parse("2026-10-26T23:00:00Z")}`,
-    );
+  it("both stored → the one with the newer updated_at", async () => {
+    const newer = JSON.stringify(status("return", "12:30"));
+    const older = JSON.stringify(status("outbound", "08:59"));
+    const r = await setup({ stored: { "status:outbound": older, "status:return": newer } }).call("/status");
+    expect(await r.text()).toBe(newer);
   });
 
-  it("picks the leg by Rome time without dir", async () => {
-    const body = makeRaw({
-      fermate: [
-        { id: "S00002", programmata: at("12:11") },
-        { id: "S00003", programmata: at("13:00") },
-      ],
-    });
-    const s = setup({ now: at("12:30"), body });
-    const j = await json(await s.call("/status"));
-    expect(j.direction).toBe("return");
-    expect(j.ok).toBe(true);
-    expect(s.fetchFn.mock.calls[0][0]).toContain("/andamentoTreno/S00002/00001/");
+  it("only one stored → that one", async () => {
+    const only = JSON.stringify(status("outbound", "07:50"));
+    const r = await setup({ stored: { "status:outbound": only } }).call("/status");
+    expect(await r.text()).toBe(only);
   });
 
-  it("does not leak upstream station names or the train number", async () => {
-    const text = await (await setup().call("/status?dir=outbound")).text();
-    expect(text).not.toContain("SECRET");
-    expect(JSON.parse(text)).not.toHaveProperty("train");
+  it("dir selects that key even when the other is newer", async () => {
+    const older = JSON.stringify(status("outbound", "08:59"));
+    const newer = JSON.stringify(status("return", "12:30"));
+    const r = await setup({ stored: { "status:outbound": older, "status:return": newer } }).call("/status?dir=outbound");
+    expect(await r.text()).toBe(older);
   });
 
-  it("OPTIONS /status â†’ 204 with CORS headers", async () => {
+  it("dir with a missing key → ok:false", async () => {
+    const other = JSON.stringify(status("outbound", "07:50"));
+    const r = await setup({ stored: { "status:outbound": other } }).call("/status?dir=return");
+    expect(((await r.json()) as StatusResponse).ok).toBe(false);
+  });
+
+  it("returns updated_at as stored, so an old status stays visibly old", async () => {
+    const old = status("outbound", "06:00");
+    const r = await setup({ stored: { "status:outbound": JSON.stringify(old) } }).call("/status");
+    expect(((await r.json()) as StatusResponse).updated_at).toBe(old.updated_at);
+  });
+
+  it("a corrupt stored value counts as missing", async () => {
+    const good = JSON.stringify(status("return", "12:30"));
+    const r = await setup({ stored: { "status:outbound": "{bad", "status:return": good } }).call("/status");
+    expect(await r.text()).toBe(good);
+  });
+
+  it("KV read failure → 200 ok:false", async () => {
+    const r = await setup({ failing: { get: true } }).call("/status");
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as StatusResponse).ok).toBe(false);
+  });
+
+  it("OPTIONS /status → 204 with CORS headers", async () => {
     const r = await setup().call("/status", { method: "OPTIONS" });
     expect(r.status).toBe(204);
     expect(r.headers.get("access-control-allow-origin")).toBe(ORIGIN);
@@ -110,43 +166,139 @@ describe("GET /status", () => {
   });
 });
 
-describe("abuse and failure handling", () => {
-  it("rate limited â†’ 429, keyed by client IP", async () => {
+describe("POST /push authentication", () => {
+  it.each<[string, Record<string, string>]>([
+    ["no header", {}],
+    ["wrong token, same length", { Authorization: `Bearer ${"b".repeat(64)}` }],
+    ["wrong token, shorter", { Authorization: "Bearer x" }],
+    ["wrong token, longer", { Authorization: `Bearer ${TOKEN}x` }],
+    ["wrong scheme", { Authorization: `Basic ${TOKEN}` }],
+  ])("%s → 401 and the body is never read", async (_n, headers) => {
+    const s = setup();
+    const r = await s.call("/push", { method: "POST", headers, body: throwingBody(), duplex: "half" } as RequestInit);
+    expect(r.status).toBe(401);
+    expect(s.data.size).toBe(0);
+  });
+
+  it.each<[string, string | null]>([
+    ["unset", null],
+    ["empty", ""],
+  ])("PUSH_TOKEN %s → 401 even for an empty bearer", async (_n, token) => {
+    const s = setup({ token });
+    expect((await s.push(validPush(), { Authorization: "Bearer " })).status).toBe(401);
+    expect((await s.push(validPush(), { Authorization: "Bearer undefined" })).status).toBe(401);
+  });
+});
+
+describe("POST /push body", () => {
+  it("valid → 204 and KV holds the re-serialised clean status", async () => {
+    const s = setup();
+    const dirty = { ...status("outbound", "07:54"), train: "00000", extra: { a: 1 } };
+    const r = await s.push(JSON.stringify({ leg: "outbound", status: dirty }));
+    expect(r.status).toBe(204);
+    expect(JSON.parse(s.data.get("status:outbound") as string)).toEqual(status("outbound", "07:54"));
+    expect(s.data.has("status:return")).toBe(false);
+  });
+
+  it("the return leg goes to its own key", async () => {
+    const s = setup();
+    const r = await s.push(JSON.stringify({ leg: "return", status: status("return", "12:30") }));
+    expect(r.status).toBe(204);
+    expect(s.data.has("status:return")).toBe(true);
+  });
+
+  it("accepts an error status", async () => {
+    const s = setup();
+    expect((await s.push(JSON.stringify({ leg: "outbound", status: errorStatus(at("07:55")) }))).status).toBe(204);
+  });
+
+  it("a declared length over 8 KB → 413 and the body is never read", async () => {
+    const s = setup();
+    const r = await s.call("/push", {
+      method: "POST",
+      headers: { ...AUTH, "Content-Length": "9000" },
+      body: throwingBody(),
+      duplex: "half",
+    } as RequestInit);
+    expect(r.status).toBe(413);
+  });
+
+  it("9000 streamed bytes without a length → 413", async () => {
+    const r = await setup().call("/push", { method: "POST", headers: AUTH, body: streamOf(9000), duplex: "half" } as RequestInit);
+    expect(r.status).toBe(413);
+  });
+
+  it("exactly 8192 bytes is read, not rejected as too large", async () => {
+    const body = validPush().padEnd(8192, " ");
+    const s = setup();
+    expect((await s.push(body)).status).toBe(204);
+  });
+
+  it.each<[string, string]>([
+    ["invalid JSON", "{bad"],
+    ["empty", ""],
+    ["not an object", "[]"],
+    ["unknown leg", JSON.stringify({ leg: "sideways", status: status("outbound", "07:54") })],
+    ["missing status", JSON.stringify({ leg: "outbound" })],
+    ["invalid status", JSON.stringify({ leg: "outbound", status: { ok: "yes" } })],
+  ])("%s → 400 and nothing stored", async (_n, body) => {
+    const s = setup();
+    expect((await s.push(body)).status).toBe(400);
+    expect(s.data.size).toBe(0);
+  });
+
+  it("KV write failure → 503", async () => {
+    expect((await setup({ failing: { put: true } }).push(validPush())).status).toBe(503);
+  });
+
+  it("no CORS header on any /push response", async () => {
+    const s = setup();
+    for (const r of [await s.push(validPush()), await s.push("{bad"), await s.push(validPush(), {})]) {
+      expect(r.headers.get("access-control-allow-origin")).toBeNull();
+    }
+  });
+
+  it("no response caching on /push", async () => {
+    expect((await setup().push("{bad")).headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+describe("safeEqual", () => {
+  it.each<[string, string, boolean]>([
+    ["abc", "abc", true],
+    ["", "", true],
+    ["abc", "abd", false],
+    ["abc", "abcd", false],
+    ["abcd", "abc", false],
+    ["abc", "", false],
+  ])("%j vs %j → %s", (a, b, expected) => {
+    expect(safeEqual(a, b)).toBe(expected);
+  });
+});
+
+describe("rate limit", () => {
+  it("GET limited → 429, keyed by client IP", async () => {
     const s = setup({ limited: true });
     expect((await s.call("/status")).status).toBe(429);
     expect(s.limit).toHaveBeenCalledWith({ key: "203.0.113.7" });
-    expect(s.fetchFn).not.toHaveBeenCalled();
   });
 
-  it("caches per leg for 30 s", async () => {
+  it("POST /push limited → 429 before auth and nothing stored", async () => {
+    const s = setup({ limited: true });
+    const r = await s.call("/push", { method: "POST", body: throwingBody(), duplex: "half" } as RequestInit);
+    expect(r.status).toBe(429);
+    expect(r.headers.get("access-control-allow-origin")).toBeNull();
+    expect(s.data.size).toBe(0);
+  });
+});
+
+describe("no upstream", () => {
+  it("never calls fetch and never reads ROUTE_CONFIG", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
     const s = setup();
-    await s.call("/status?dir=outbound");
-    s.advance(29_000);
-    await s.call("/status?dir=outbound");
-    expect(s.fetchFn).toHaveBeenCalledTimes(1);
-    s.advance(2_000);
-    await s.call("/status?dir=outbound");
-    expect(s.fetchFn).toHaveBeenCalledTimes(2);
-  });
-
-  it("upstream hang â†’ ok:false, not cached", async () => {
-    const hang = ((_u: string, init?: RequestInit) =>
-      new Promise((_r, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))))) as typeof fetch;
-    const s = setup({ fetchFn: hang });
-    const r = await s.call("/status?dir=outbound");
-    expect(r.status).toBe(200);
-    expect((await json(r)).ok).toBe(false);
-    await s.call("/status?dir=outbound");
-    expect(s.fetchFn).toHaveBeenCalledTimes(2);
-  });
-
-  it.each([
-    ["invalid", "{bad"],
-    ["missing", null],
-  ])("%s ROUTE_CONFIG â†’ ok:false without calling upstream", async (_n, config) => {
-    const s = setup({ config });
-    const r = await s.call("/status");
-    expect((await json(r)).ok).toBe(false);
-    expect(s.fetchFn).not.toHaveBeenCalled();
+    await s.call("/status");
+    await s.push(validPush());
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
