@@ -234,6 +234,65 @@ Kubernetes Secrets are created by piping values over SSH to `kubectl create secr
 
 The age shown ("aggiornato N min fa" / stale) is computed from `updated_at`, which records when the server read the train, not when the phone received the response. If the poller stops, the page dims after 3 minutes.
 
+## 13. Revision 2 (2026-11-02): this system as a tenant of a shared cluster
+
+**Why**: the home k3s cluster now hosts several independent systems and is managed from a separate repository. That repository provides this system's namespace with ingress isolation, and publishes the rules tenants must follow. Everything inside the namespace belongs to this repository.
+
+This section supersedes the parts of §12 about who creates the namespace and how secrets reach the cluster. Object names, the CronJob fields and pod hardening in §12 are unchanged.
+
+### Deploy
+
+```
+deploy/
+├── site.yml             Ansible playbook, run on localhost
+├── k3s/cronjob.yaml
+├── poller.env.example   fictional values
+└── README.md            generic commands, no real values
+```
+
+`deploy/site.yml` acts only through `kubectl` against the Kubernetes API. No SSH and no files on the server. It sets `KUBECONFIG` itself (default `~/.kube/config`), so it does not depend on the terminal's environment. In order, it:
+
+1. checks the namespace exists, otherwise stops and says the cluster's own playbook must run first. It never creates the namespace;
+2. checks `worker/dist/poller.mjs` and the secrets file exist, otherwise stops. The bundle is built beforehand with `npm run build:poller`;
+3. applies ConfigMap `poller-code` from the bundle;
+4. applies Secret `are-you-late` from the secrets file;
+5. applies the CronJob.
+
+Each run of the CronJob starts a new pod, which reads the current ConfigMap and Secret, so no restart is needed.
+
+### Secrets
+
+No secret is stored in any repository, not even encrypted. The poller's values live in `~/.config/are-you-late/poller.env`, outside the repository, in the home directory, readable by the owner only. The path is a playbook variable.
+
+Format: one `KEY=value` per line, without quotes, because `--from-env-file` would keep them as part of the value. `ROUTE_CONFIG` is JSON on a single line. Keys: `ROUTE_CONFIG`, `PUSH_TOKEN`, `PUSH_URL`.
+
+Steps 3 and 4 have this form:
+
+```bash
+set -o pipefail
+kubectl create secret generic are-you-late -n are-you-late \
+  --from-env-file="$FILE" --dry-run=client -o yaml \
+  | kubectl apply --server-side -f -
+```
+
+- Values never enter Ansible variables or command arguments: arguments hold only the file path, and the two `kubectl` processes communicate over stdin.
+- `--server-side` keeps the values out of the `last-applied-configuration` annotation.
+- The Secret task uses `no_log: true`.
+
+`worker/.dev.vars` stays for local development and `leak.test.ts`. If the PC is lost, the file is lost: `PUSH_TOKEN` can be regenerated and `ROUTE_CONFIG` rebuilt from the private route details, but both should also be kept in a password manager.
+
+The Cloudflare side (KV namespace, `wrangler secret`, `wrangler deploy`) stays manual, as in the plan.
+
+### Verification
+
+| What | How |
+|---|---|
+| Playbook | `ansible-playbook --syntax-check`; a second run reports no changes other than the piped applies, which are not idempotent as far as Ansible can tell |
+| Poller | `kubectl create job --from=cronjob/poller` shows `push ok` in its log; `curl` on `/status` returns `ok:true` |
+| Upstream from the pod | the same job reaches ViaggiaTreno, not only the Worker |
+| Secrets | the Secret has no `last-applied-configuration` annotation; Ansible output holds no values |
+| Privacy | `leak.test.ts` is green, and real values are searched in the whole git history before any push |
+
 ## 11. Open points
 
 - Exact cancellation flags in ViaggiaTreno (see §6).
