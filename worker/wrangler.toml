@@ -8,10 +8,10 @@ ALLOWED_ORIGIN = "https://mirkogibin.github.io"
 
 # PUSH_TOKEN is a secret: `wrangler secret put PUSH_TOKEN` (never in this file).
 
-# Latest pushed status per leg. The id is filled in when the namespace is created.
+# Latest pushed status per leg.
 [[kv_namespaces]]
 binding = "STATUS"
-id = "TO_BE_CREATED"
+id = "86dff8c485b74218b6aa276db8085f39"
 
 [[ratelimits]]
 name = "RATE_LIMITER"
