@@ -3,7 +3,7 @@
 
 const API = location.hostname === "localhost" || location.hostname === "127.0.0.1"
   ? "http://127.0.0.1:8787/status"
-  : "https://are-you-late.SUBDOMAIN.workers.dev/status";
+  : "https://are-you-late.are-you-late.workers.dev/status";
 const REFRESH_MS = 60_000;
 const STALE_MS = 3 * 60_000;
 const FETCH_TIMEOUT_MS = 8_000;
