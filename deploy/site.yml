@@ -1,0 +1,100 @@
+# Deploys the poller to the shared cluster, through the Kubernetes API only.
+#
+#   npm --prefix worker run build:poller
+#   ansible-playbook -i localhost, deploy/site.yml
+#
+# Secret values never enter Ansible variables or command arguments: they go
+# from the secrets file to kubectl over stdin.
+
+- name: Deploy the poller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    k8s_namespace: are-you-late
+    secrets_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/are-you-late/poller.env"
+    kubeconfig_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.kube/config"
+    bundle: "{{ playbook_dir }}/../worker/dist/poller.mjs"
+  environment:
+    KUBECONFIG: "{{ kubeconfig_file }}"
+  tasks:
+    # --- Stop conditions: nothing is applied unless all of them pass ---------
+
+    - name: Read the namespace
+      ansible.builtin.command: kubectl get namespace {{ k8s_namespace }}
+      register: namespace_get
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Stop if the namespace does not exist
+      ansible.builtin.assert:
+        that: namespace_get.rc == 0
+        fail_msg: >-
+          Namespace {{ k8s_namespace }} not found. It is provided by the cluster's
+          own repository: run its playbook first. This playbook never creates it.
+        quiet: true
+
+    - name: Read the poller bundle
+      ansible.builtin.stat:
+        path: "{{ bundle }}"
+      register: bundle_stat
+
+    - name: Stop if the poller bundle is missing
+      ansible.builtin.assert:
+        that: bundle_stat.stat.exists
+        fail_msg: "{{ bundle }} not found. Build it first: npm --prefix worker run build:poller"
+        quiet: true
+
+    - name: Read the secrets file
+      ansible.builtin.stat:
+        path: "{{ secrets_file }}"
+      register: secrets_stat
+
+    - name: Stop if the secrets file is missing
+      ansible.builtin.assert:
+        that: secrets_stat.stat.exists
+        fail_msg: >-
+          {{ secrets_file }} not found. Create it from deploy/poller.env.example,
+          then: chmod 600 {{ secrets_file }}
+        quiet: true
+
+    - name: Stop if the secrets file is readable by others
+      ansible.builtin.assert:
+        that: secrets_stat.stat.mode == '0600'
+        fail_msg: >-
+          {{ secrets_file }} has mode {{ secrets_stat.stat.mode }}.
+          Fix it: chmod 600 {{ secrets_file }}
+        quiet: true
+
+    # --- Apply ------------------------------------------------------------------
+    # The piped applies always report a change: Ansible cannot tell whether the
+    # server-side apply modified anything.
+
+    - name: Apply the poller code (ConfigMap poller-code)
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          kubectl create configmap poller-code -n {{ k8s_namespace }} \
+            --from-file=poller.mjs={{ bundle | quote }} --dry-run=client -o yaml \
+            | kubectl apply --server-side -f -
+        executable: /bin/bash
+      changed_when: true
+
+    # --server-side keeps the values out of the last-applied-configuration
+    # annotation; no_log keeps them out of the Ansible output.
+    - name: Apply the poller configuration (Secret are-you-late)
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          kubectl create secret generic are-you-late -n {{ k8s_namespace }} \
+            --from-env-file={{ secrets_file | quote }} --dry-run=client -o yaml \
+            | kubectl apply --server-side -f -
+        executable: /bin/bash
+      changed_when: true
+      no_log: true
+
+    - name: Apply the CronJob
+      ansible.builtin.command: kubectl apply -f {{ playbook_dir }}/k3s/cronjob.yaml
+      register: cronjob_apply
+      changed_when: "' unchanged' not in cronjob_apply.stdout"

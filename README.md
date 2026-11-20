@@ -11,8 +11,10 @@ Has my regional train left the previous stations yet? How late is it? A tiny pho
 ## How it works
 
 - A static page on GitHub Pages, meant for the phone.
-- A small Cloudflare Worker that reads ViaggiaTreno (browsers can't call it directly) and computes the train status.
-- The route (trains, stations, labels) is configuration kept outside this repository. See `worker/route-config.example.json` once it exists.
+- A small poller on a home server reads ViaggiaTreno, computes the train status and pushes it to a Cloudflare Worker. ViaggiaTreno blocks cloud hosts and browsers can't call it directly, so the data is fetched from home.
+- The Worker stores the latest status and serves it to the page.
+- The route (trains, stations, labels) is configuration kept outside this repository. See `worker/route-config.example.json` for its shape.
+- Deploy: [deploy/README.md](deploy/README.md).
 
 Design and technical details: [CLAUDE.md](CLAUDE.md) and [the design spec](docs/superpowers/specs/2026-10-26-are-you-late-design.md).
 

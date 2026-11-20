@@ -1,0 +1,57 @@
+# Poller: reads the current leg from ViaggiaTreno and pushes its status to the
+# Worker, every minute during the travel hours. The code comes from ConfigMap
+# poller-code and the configuration from Secret are-you-late, both applied by
+# deploy/site.yml.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: poller
+  namespace: are-you-late
+spec:
+  schedule: "* 5-8,12-14 * * *"
+  timeZone: Europe/Rome
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 50
+      ttlSecondsAfterFinished: 600
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: poller
+              image: node:24-alpine
+              command: ["node", "/app/poller.mjs"]
+              envFrom:
+                - secretRef:
+                    name: are-you-late
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: code
+                  mountPath: /app
+                  readOnly: true
+          volumes:
+            - name: code
+              configMap:
+                name: poller-code
